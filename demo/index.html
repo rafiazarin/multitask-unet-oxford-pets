@@ -1,0 +1,284 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pet segmentation + breed classification, in your browser</title>
+<script src="https://cdn.jsdelivr.net/npm/onnxruntime-web@1.30.0/dist/ort.wasm.min.js"></script>
+<style>
+  :root { --bg:#ffffff; --fg:#1f2328; --muted:#656d76; --line:#d0d7de; --accent:#1a7f37; --card:#f6f8fa; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#0d1117; --fg:#e6edf3; --muted:#8d96a0; --line:#30363d; --accent:#3fb950; --card:#161b22; }
+  }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg);
+         font:16px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  main { max-width: 920px; margin: 0 auto; padding: 28px 20px 48px; }
+  h1 { font-size: 1.6rem; margin: 0 0 6px; }
+  h2 { font-size: 1.1rem; margin: 28px 0 10px; }
+  .sub { color: var(--muted); margin: 0 0 6px; }
+  a { color: var(--accent); }
+  #status { margin: 18px 0 10px; font-weight: 600; }
+  .drop { display:block; border:2px dashed var(--line); border-radius:12px; padding:36px 16px;
+          text-align:center; cursor:pointer; background:var(--card); }
+  .drop.over { border-color: var(--accent); }
+  .drop.disabled { opacity:.5; pointer-events:none; }
+  .grid { display:grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap:16px; margin-top:20px; }
+  figure { margin:0; }
+  canvas { width:100%; height:auto; display:block; border-radius:8px; border:1px solid var(--line); }
+  .checker { background-color:#fff;
+    background-image: linear-gradient(45deg,#ccc 25%,transparent 25%), linear-gradient(-45deg,#ccc 25%,transparent 25%),
+      linear-gradient(45deg,transparent 75%,#ccc 75%), linear-gradient(-45deg,transparent 75%,#ccc 75%);
+    background-size:20px 20px; background-position:0 0,0 10px,10px -10px,-10px 0; }
+  figcaption { color: var(--muted); font-size: .9rem; margin-top: 6px; }
+  ol { list-style:none; padding:0; margin:0; }
+  li { display:grid; grid-template-columns: minmax(170px, 1.2fr) 2fr 64px; gap:10px; align-items:center; margin:8px 0; }
+  .bar { height:10px; background:var(--card); border:1px solid var(--line); border-radius:6px; overflow:hidden; }
+  .bar span { display:block; height:100%; background:var(--accent); }
+  .pct { text-align:right; font-variant-numeric: tabular-nums; }
+  small, .muted { color: var(--muted); }
+  .notes p, .notes li { color: var(--muted); }
+  .notes ul { padding-left: 20px; }
+  .notes li { display:list-item; margin:4px 0; }
+  button { font:inherit; padding:6px 12px; border-radius:8px; border:1px solid var(--line);
+           background:var(--card); color:var(--fg); cursor:pointer; }
+  button:disabled { opacity:.5; cursor:default; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Pet segmentation + breed classification</h1>
+  <p class="sub">A multi-task U-Net (EfficientNet-B0 encoder) running entirely in your browser with ONNX Runtime Web.
+     Your photo is processed on your device and is not uploaded anywhere.</p>
+  <p class="sub"><a href="https://github.com/rafiazarin/multitask-unet-oxford-pets" target="_blank" rel="noopener">Code</a> ·
+     <a href="https://huggingface.co/rafiazarin/multitask-unet-oxford-pets" target="_blank" rel="noopener">Model</a></p>
+
+  <div id="status">Loading…</div>
+  <label id="drop" class="drop disabled">
+    <input type="file" id="file" accept="image/*" hidden>
+    Click to choose, or drop, a photo of a cat or dog
+  </label>
+
+  <section id="results" hidden>
+    <div class="grid">
+      <figure><canvas id="cvOverlay"></canvas><figcaption>Predicted pet mask</figcaption></figure>
+      <figure><canvas id="cvCutout" class="checker"></canvas>
+        <figcaption>Background removed · <a id="dl" href="#" download="pet_cutout.png">download PNG</a></figcaption></figure>
+    </div>
+    <h2>Top-3 breeds</h2>
+    <ol id="top3"></ol>
+    <p id="timing" class="muted"></p>
+    <p><button id="bench" type="button">Run speed test (20 runs)</button> <span id="benchOut" class="muted"></span></p>
+  </section>
+
+  <section class="notes">
+    <h2>About the model</h2>
+    <p>One network predicts both a pet/background mask and one of the 37 breeds in the Oxford-IIIT Pet dataset.
+       On the held-out test set (1,109 images): Pet IoU 0.924, breed accuracy 92.4%.
+       The ONNX file used here was checked against the original PyTorch model on that full test set before release.</p>
+    <h2>Limitations</h2>
+    <ul>
+      <li>It only knows 37 breeds. For any other breed, or an image with no pet, it still returns one of the 37. It does not reject unrelated images yet.</li>
+      <li>The mask is predicted at 224×224 and scaled up to your image, so edges are soft.</li>
+      <li>The browser resizes your photo slightly differently from the Python pipeline used for evaluation, so results can differ a little from the reported test setup.</li>
+    </ul>
+  </section>
+</main>
+
+<script>
+const ORT_VERSION = "1.30.0";
+const MODEL_URL = "https://huggingface.co/rafiazarin/multitask-unet-oxford-pets/resolve/main/pets_unet.onnx";
+const SIZE = 224;
+const MEAN = [0.485, 0.456, 0.406];
+const STD = [0.229, 0.224, 0.225];
+// Same order as training (Python sorted()): 12 cat breeds first, then 25 dog breeds.
+const BREEDS = ["Abyssinian", "Bengal", "Birman", "Bombay", "British_Shorthair", "Egyptian_Mau", "Maine_Coon", "Persian", "Ragdoll", "Russian_Blue", "Siamese", "Sphynx", "american_bulldog", "american_pit_bull_terrier", "basset_hound", "beagle", "boxer", "chihuahua", "english_cocker_spaniel", "english_setter", "german_shorthaired", "great_pyrenees", "havanese", "japanese_chin", "keeshond", "leonberger", "miniature_pinscher", "newfoundland", "pomeranian", "pug", "saint_bernard", "samoyed", "scottish_terrier", "shiba_inu", "staffordshire_bull_terrier", "wheaten_terrier", "yorkshire_terrier"];
+const N_CATS = 12;
+
+ort.env.wasm.wasmPaths = `https://cdn.jsdelivr.net/npm/onnxruntime-web@${ORT_VERSION}/dist/`;
+ort.env.wasm.numThreads = self.crossOriginIsolated ? Math.min(4, navigator.hardwareConcurrency || 1) : 1;
+
+const statusEl = document.getElementById("status");
+const drop = document.getElementById("drop");
+const fileInput = document.getElementById("file");
+const resultsEl = document.getElementById("results");
+const top3El = document.getElementById("top3");
+const timingEl = document.getElementById("timing");
+const dl = document.getElementById("dl");
+const benchBtn = document.getElementById("bench");
+const benchOut = document.getElementById("benchOut");
+let session = null;
+let lastFeed = null;
+
+function pretty(b) { return b.replace(/_/g, " ").replace(/\b\w/g, c => c.toUpperCase()); }
+
+async function fetchWithProgress(url) {
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`model download failed (HTTP ${res.status})`);
+  const total = Number(res.headers.get("Content-Length")) || 0;
+  const reader = res.body.getReader();
+  const chunks = [];
+  let got = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    chunks.push(value);
+    got += value.length;
+    statusEl.textContent = total
+      ? `Downloading model… ${(got / 1e6).toFixed(1)} / ${(total / 1e6).toFixed(1)} MB`
+      : `Downloading model… ${(got / 1e6).toFixed(1)} MB`;
+  }
+  const bytes = new Uint8Array(got);
+  let off = 0;
+  for (const c of chunks) { bytes.set(c, off); off += c.length; }
+  return bytes;
+}
+
+async function init() {
+  try {
+    const bytes = await fetchWithProgress(MODEL_URL);
+    statusEl.textContent = "Starting the model…";
+    session = await ort.InferenceSession.create(bytes, { executionProviders: ["wasm"] });
+    // Warm-up run so the timing shown for your photo excludes one-off start-up cost.
+    const zeros = new ort.Tensor("float32", new Float32Array(3 * SIZE * SIZE), [1, 3, SIZE, SIZE]);
+    await session.run({ [session.inputNames[0]]: zeros });
+    statusEl.textContent = "Model ready. Choose a photo.";
+    drop.classList.remove("disabled");
+  } catch (e) {
+    console.error(e);
+    statusEl.textContent = `Could not load the model: ${e.message}`;
+  }
+}
+
+function loadImage(file) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => resolve(img);
+    img.onerror = () => reject(new Error("could not read that image"));
+    img.src = URL.createObjectURL(file);
+  });
+}
+
+async function analyze(file) {
+  if (!session || !file) return;
+  try {
+    statusEl.textContent = "Running…";
+    const img = await loadImage(file);
+    const scale = Math.min(1, 1024 / Math.max(img.naturalWidth, img.naturalHeight));
+    const W = Math.round(img.naturalWidth * scale);
+    const H = Math.round(img.naturalHeight * scale);
+
+    // 1. Model input: stretch to 224x224 (as in training), scale to [0,1], ImageNet-normalise, CHW order.
+    const inC = document.createElement("canvas");
+    inC.width = inC.height = SIZE;
+    const inCtx = inC.getContext("2d", { willReadFrequently: true });
+    inCtx.imageSmoothingQuality = "high";
+    inCtx.drawImage(img, 0, 0, SIZE, SIZE);
+    const px = inCtx.getImageData(0, 0, SIZE, SIZE).data;
+    const input = new Float32Array(3 * SIZE * SIZE);
+    for (let i = 0; i < SIZE * SIZE; i++) {
+      for (let c = 0; c < 3; c++) {
+        input[c * SIZE * SIZE + i] = (px[i * 4 + c] / 255 - MEAN[c]) / STD[c];
+      }
+    }
+
+    lastFeed = { [session.inputNames[0]]: new ort.Tensor("float32", input, [1, 3, SIZE, SIZE]) };
+    benchOut.textContent = "";
+    const t0 = performance.now();
+    const out = await session.run(lastFeed);
+    const ms = performance.now() - t0;
+    const seg = (out.seg_logits || out[session.outputNames[0]]).data;
+    const cls = (out.cls_logits || out[session.outputNames[1]]).data;
+
+    // 2. Mask: sigmoid probability map at 224x224, scaled up to display size, then threshold at 0.5.
+    const pC = document.createElement("canvas");
+    pC.width = pC.height = SIZE;
+    const pCtx = pC.getContext("2d");
+    const pImg = pCtx.createImageData(SIZE, SIZE);
+    for (let i = 0; i < SIZE * SIZE; i++) {
+      const v = Math.round(255 / (1 + Math.exp(-seg[i])));
+      pImg.data[i * 4] = pImg.data[i * 4 + 1] = pImg.data[i * 4 + 2] = v;
+      pImg.data[i * 4 + 3] = 255;
+    }
+    pCtx.putImageData(pImg, 0, 0);
+    const mC = document.createElement("canvas");
+    mC.width = W; mC.height = H;
+    const mCtx = mC.getContext("2d", { willReadFrequently: true });
+    mCtx.drawImage(pC, 0, 0, W, H);
+    const mp = mCtx.getImageData(0, 0, W, H).data;
+
+    // 3. Overlay and cutout at display size.
+    const oC = document.getElementById("cvOverlay");
+    oC.width = W; oC.height = H;
+    const oCtx = oC.getContext("2d", { willReadFrequently: true });
+    oCtx.drawImage(img, 0, 0, W, H);
+    const base = oCtx.getImageData(0, 0, W, H);
+    const overlay = new ImageData(new Uint8ClampedArray(base.data), W, H);
+    const cut = new ImageData(new Uint8ClampedArray(base.data), W, H);
+    for (let i = 0; i < W * H; i++) {
+      const pet = mp[i * 4] >= 128;
+      if (pet) {
+        overlay.data[i * 4] = overlay.data[i * 4] * 0.5;
+        overlay.data[i * 4 + 1] = overlay.data[i * 4 + 1] * 0.5 + 127.5;
+        overlay.data[i * 4 + 2] = overlay.data[i * 4 + 2] * 0.5;
+      }
+      cut.data[i * 4 + 3] = pet ? 255 : 0;
+    }
+    oCtx.putImageData(overlay, 0, 0);
+    const cC = document.getElementById("cvCutout");
+    cC.width = W; cC.height = H;
+    cC.getContext("2d").putImageData(cut, 0, 0);
+    cC.toBlob(b => { if (b) dl.href = URL.createObjectURL(b); }, "image/png");
+
+    // 4. Top-3 breeds (softmax over the 37 classes).
+    const mx = Math.max(...cls);
+    const ex = Array.from(cls, v => Math.exp(v - mx));
+    const sum = ex.reduce((a, b) => a + b, 0);
+    const top = ex.map((v, i) => [v / sum, i]).sort((a, b) => b[0] - a[0]).slice(0, 3);
+    top3El.innerHTML = top.map(([p, i]) =>
+      `<li><span>${pretty(BREEDS[i])} <small>(${i < N_CATS ? "cat" : "dog"})</small></span>` +
+      `<span class="bar"><span style="width:${(p * 100).toFixed(1)}%"></span></span>` +
+      `<span class="pct">${(p * 100).toFixed(1)}%</span></li>`).join("");
+
+    const th = ort.env.wasm.numThreads;
+    timingEl.textContent = `Model inference: ${ms.toFixed(0)} ms on this device (WebAssembly, ${th} thread${th === 1 ? "" : "s"}).`;
+    resultsEl.hidden = false;
+    statusEl.textContent = "Done. Try another photo.";
+  } catch (e) {
+    console.error(e);
+    statusEl.textContent = `Something went wrong: ${e.message}`;
+  }
+}
+
+// Speed test: re-runs the model on the current photo and reports the median of 20 timed runs.
+benchBtn.addEventListener("click", async () => {
+  if (!session || !lastFeed) return;
+  benchBtn.disabled = true;
+  benchOut.textContent = "Running 20 timed runs…";
+  const times = [];
+  for (let i = 0; i < 20; i++) {
+    const t = performance.now();
+    await session.run(lastFeed);
+    times.push(performance.now() - t);
+  }
+  times.sort((a, b) => a - b);
+  const median = (times[9] + times[10]) / 2;
+  const th = ort.env.wasm.numThreads;
+  benchOut.textContent = `Median ${median.toFixed(0)} ms over 20 runs (fastest ${times[0].toFixed(0)} ms, ` +
+    `slowest ${times[19].toFixed(0)} ms) · WebAssembly, ${th} thread${th === 1 ? "" : "s"}`;
+  benchBtn.disabled = false;
+});
+
+fileInput.addEventListener("change", () => analyze(fileInput.files[0]));
+drop.addEventListener("dragover", e => { e.preventDefault(); drop.classList.add("over"); });
+drop.addEventListener("dragleave", () => drop.classList.remove("over"));
+drop.addEventListener("drop", e => {
+  e.preventDefault();
+  drop.classList.remove("over");
+  analyze(e.dataTransfer.files[0]);
+});
+
+init();
+</script>
+</body>
+</html>
