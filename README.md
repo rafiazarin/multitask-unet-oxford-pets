@@ -128,3 +128,10 @@ print(top3)
 ---
 
 Course project for **CSE428 Image Processing**, BRAC University.
+
+## License and data
+
+The code in this repository is released under the [MIT License](LICENSE).
+The Oxford-IIIT Pet dataset is distributed by its authors under a [Creative Commons Attribution-ShareAlike 4.0](https://creativecommons.org/licenses/by-sa/4.0/) license; copyright of the images remains with their original owners.
+
+Dataset: O. M. Parkhi, A. Vedaldi, A. Zisserman and C. V. Jawahar, "Cats and Dogs," *IEEE Conference on Computer Vision and Pattern Recognition (CVPR)*, 2012.
