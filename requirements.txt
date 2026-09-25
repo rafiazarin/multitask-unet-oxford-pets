@@ -1,8 +1,14 @@
-numpy
-pandas
-matplotlib
-Pillow
-scikit-learn
-torch
-torchvision
+# Tested with these versions: the Kaggle environment (Python 3.12.13, September 2026) where
+# verify_onnx.py was run, which also re-runs the PyTorch evaluation. The original training
+# runs used Kaggle's default image at the time; their exact library versions were not recorded.
+torch==2.10.0
+torchvision==0.25.0
+numpy==2.0.2
+Pillow==11.3.0
+scikit-learn==1.6.1
+pandas==2.3.3
+matplotlib==3.10.0
+onnx==1.22.0
+onnxruntime==1.30.0
+# For running the notebooks (version not pinned)
 jupyter
