@@ -1,0 +1,41 @@
+# Output of `python ood_eval.py` run on Kaggle (CPU), 28 September 2026. Copied verbatim.
+# ood_results.json from this run was not kept; re-running ood_eval.py reproduces these numbers
+# (fixed seeds, fixed data). The demo uses the thresholds below as printed (4 decimals).
+
+downloading https://www.robots.ox.ac.uk/~vgg/data/pets/data/images.tar.gz
+downloading https://www.robots.ox.ac.uk/~vgg/data/pets/data/annotations.tar.gz
+ID  val 1108 | test 1109
+downloading http://images.cocodataset.org/annotations/annotations_trainval2017.zip
+downloading http://images.cocodataset.org/zips/val2017.zip
+OOD coco_nonpet: 1000 images (from 4651 without cat/dog)
+downloading http://vision.stanford.edu/aditya86/ImageNetDogs/images.tar
+/kaggle/working/ood_eval.py:95: DeprecationWarning: Python 3.14 will, by default, filter extracted tar archives and reject files or modify their metadata. Use the filter argument to control this behavior.
+  t.extract(m, DATA)
+OOD other_dogs: 1000 images from 98 non-overlapping breeds (22 excluded of 120)
+scored everything in 615s
+
+AUROC / FPR@95%TPR  (ID val vs OOD val halves)
+  score                    coco_nonpet                other_dogs
+  msp                    0.989 / 0.060             0.887 / 0.516
+  max_logit              0.987 / 0.052             0.895 / 0.470
+  energy                 0.959 / 0.248             0.895 / 0.434
+  area                   0.960 / 0.160             0.593 / 0.864
+
+AUROC / FPR@95%TPR  (ID test vs OOD test halves)
+  score                    coco_nonpet                other_dogs
+  msp                    0.990 / 0.056             0.879 / 0.496
+  max_logit              0.987 / 0.048             0.886 / 0.458
+  energy                 0.963 / 0.260             0.885 / 0.488
+  area                   0.960 / 0.146             0.589 / 0.880
+
+Chosen confidence score (on OOD-val): max_logit
+Thresholds (from ID val only): max_logit >= 1.6900, area >= 0.0837
+
+Operating point on held-out data (pre-specified rule)
+  ID val  kept: 0.941
+  ID test kept: 0.949  (1052 of 1109)
+  ID test breed accuracy: all 0.9243 | kept 0.9477 | rejected 0.4912
+  coco_nonpet  test rejected: 0.968  (n=500)
+  other_dogs   test rejected: 0.526  (n=500)
+
+Saved ood_results.json
