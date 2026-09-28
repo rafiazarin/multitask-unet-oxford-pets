@@ -4,6 +4,8 @@ One network, two jobs. Given a photo of a cat or dog, the model **segments the p
 
 **[Live demo](https://huggingface.co/spaces/rafiazarin/multitask-unet-oxford-pets)** (runs in your browser, no upload, with Grad-CAM heatmaps) · **[Model on Hugging Face](https://huggingface.co/rafiazarin/multitask-unet-oxford-pets)** · [Training notebook](01_training.ipynb) · [Analysis notebook](02_analysis.ipynb)
 
+![Live demo: pet mask, background removal, top-3 breeds and Grad-CAM heatmap](docs/demo.png)
+
 ---
 
 ## Final model
