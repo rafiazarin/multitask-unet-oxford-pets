@@ -2,7 +2,7 @@
 
 One network, two jobs. Given a photo of a cat or dog, the model **segments the pet from the background** and **predicts its breed (37 classes)**, using a single shared encoder. Trained and evaluated on the [Oxford-IIIT Pet dataset](https://www.robots.ox.ac.uk/~vgg/data/pets/).
 
-**[Live demo](https://huggingface.co/spaces/rafiazarin/multitask-unet-oxford-pets)** (runs in your browser, no upload) · **[Model on Hugging Face](https://huggingface.co/rafiazarin/multitask-unet-oxford-pets)** · [Training notebook](01_training.ipynb) · [Analysis notebook](02_analysis.ipynb)
+**[Live demo](https://huggingface.co/spaces/rafiazarin/multitask-unet-oxford-pets)** (runs in your browser, no upload, with Grad-CAM heatmaps) · **[Model on Hugging Face](https://huggingface.co/rafiazarin/multitask-unet-oxford-pets)** · [Training notebook](01_training.ipynb) · [Analysis notebook](02_analysis.ipynb)
 
 ---
 
@@ -25,10 +25,11 @@ Course targets were ~0.70–0.80 Pet IoU and ~70% breed accuracy.
 
 ## Deployment
 
-The demo is a static page that runs the model **client-side with ONNX Runtime Web**, so photos never leave the visitor's device. Source: [`demo/index.html`](demo/index.html).
+The demo is a static page that runs the model **client-side with ONNX Runtime Web**, so photos never leave the visitor's device. It shows the mask, a background-removed cutout, the top-3 breeds, and a Grad-CAM heatmap for any of the top-3. Source: [`demo/index.html`](demo/index.html).
 
 - **ONNX export verified on the full test set.** [`verify_onnx.py`](verify_onnx.py) runs PyTorch and ONNX Runtime side by side on all 1,109 test images: identical metrics to 4 decimals, the same top-1 prediction on all 1,109 images, maximum logit difference 2.94e-4. Export: [`export_onnx.py`](export_onnx.py).
-- **In-browser speed.** Median ~120 ms per image on a MacBook Air M5 (Safari, ONNX Runtime Web 1.30.0, WebAssembly, 1 thread); two 20-run tests gave 119 ms and 120 ms. This times the model only. It excludes resizing the photo, drawing the outputs, and the one-time ~31 MB model download. The demo page has a button to rerun this test on your own device.
+- **Grad-CAM inside the model, no backpropagation needed.** The classifier head is global average pooling → Linear → ReLU → Linear, so the gradient Grad-CAM needs has a closed form in the head's weights. [`cam.py`](cam.py) builds the heatmap for all 37 breeds into the network, and `pets_unet_cam.onnx` outputs it as a 7×7 map per breed. [`verify_cam.py`](verify_cam.py) checks it against PyTorch autograd Grad-CAM (worst relative difference 5.05e-6 over 100 test images × 2 breeds) and checks ONNX against PyTorch on all 1,109 test images (heatmaps agree to 1.87e-5 relative across all 37 breeds; masks and breed predictions give the same metrics and top-1 agreement as above).
+- **In-browser speed.** Median ~120 ms per image for the deployed model with Grad-CAM on a MacBook Air M5 (Safari, ONNX Runtime Web 1.30.0, WebAssembly, 1 thread), from a 20-run test; two earlier 20-run tests of the model without Grad-CAM gave 119 ms and 120 ms. This times the model only. It excludes resizing the photo, drawing the outputs, and the one-time ~31 MB model download. The demo page has a button to rerun this test on your own device.
 
 ---
 
@@ -77,6 +78,7 @@ DenseNet121 scored highest on test, but **EfficientNet-B0 was selected because i
 - **Closed set of 37 breeds.** For any other breed, or an image with no pet, the model still returns one of the 37. There is no out-of-domain rejection yet.
 - **Same-distribution test set.** All numbers come from a held-out split of Oxford-IIIT Pet. Accuracy on other kinds of photos has not been measured.
 - **Low-resolution masks.** Masks are predicted at 224×224. The demo scales them up, so edges are soft and can include a thin band of background.
+- **Grad-CAM is coarse and descriptive.** The heatmap is a 7×7 map scaled up to the photo. It shows where evidence for a breed came from, not proof of why the model decided.
 - **Demo preprocessing differs slightly.** The browser resizes images differently from the PIL pipeline used for evaluation, so demo outputs can differ a little from the reported setup. ONNX parity was verified with the Python preprocessing.
 - **Speed measured on one device.** The latency figure is from one laptop and browser; other devices will differ.
 
@@ -101,7 +103,9 @@ DenseNet121 scored highest on test, but **EfficientNet-B0 was selected because i
 | `verify_checkpoint.py` | Reproduces the test metrics from the saved checkpoint |
 | `export_onnx.py` | Exports the checkpoint to ONNX |
 | `verify_onnx.py` | Checks ONNX vs PyTorch on the full test set |
-| `demo/index.html` | Browser demo (ONNX Runtime Web) |
+| `cam.py` | Grad-CAM computed inside the network (exportable to ONNX) |
+| `verify_cam.py` | Checks Grad-CAM vs autograd, exports `pets_unet_cam.onnx`, checks it vs PyTorch |
+| `demo/index.html` | Browser demo (ONNX Runtime Web) with Grad-CAM |
 
 ## How to run
 
