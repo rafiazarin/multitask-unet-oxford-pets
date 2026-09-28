@@ -43,6 +43,9 @@
   .notes p, .notes li { color: var(--muted); }
   .notes ul { padding-left: 20px; }
   .notes li { display:list-item; margin:4px 0; }
+  .warn { border:1px solid #d29922; background:rgba(210,153,34,.12); color:var(--fg);
+          border-radius:10px; padding:10px 14px; margin-top:16px; }
+  .warn small { display:block; margin-top:4px; }
   button { font:inherit; padding:6px 12px; border-radius:8px; border:1px solid var(--line);
            background:var(--card); color:var(--fg); cursor:pointer; }
   button:disabled { opacity:.5; cursor:default; }
@@ -63,6 +66,7 @@
   </label>
 
   <section id="results" hidden>
+    <div id="oodWarn" class="warn" hidden></div>
     <div class="grid">
       <figure><canvas id="cvOverlay"></canvas><figcaption>Predicted pet mask</figcaption></figure>
       <figure><canvas id="cvCutout" class="checker"></canvas>
@@ -83,9 +87,13 @@
     <p>The heatmap is Grad-CAM for the selected breed: warmer regions raised that breed's score. Because the classifier head
        is a small pooled MLP, the Grad-CAM gradient can be computed exactly from its weights, so the heatmap is built into the
        model itself (checked against PyTorch autograd Grad-CAM) and needs no backpropagation in the browser.</p>
+    <p>An out-of-domain check flags photos that look unlike the training data: it warns when the top breed logit is
+       below 1.69 or less than 8.37% of the image is predicted as pet (thresholds set on validation data). On held-out
+       data this kept 94.9% of real test pets, flagged 96.8% of non-pet photos (COCO), but flagged only 52.6% of dog
+       breeds the model was never trained on (Stanford Dogs).</p>
     <h2>Limitations</h2>
     <ul>
-      <li>It only knows 37 breeds. For any other breed, or an image with no pet, it still returns one of the 37. It does not reject unrelated images yet.</li>
+      <li>It only knows 37 breeds and always returns three of them. The out-of-domain warning catches most non-pet photos but only about half of unfamiliar dog breeds, and unfamiliar cat breeds were not tested.</li>
       <li>The mask is predicted at 224×224 and scaled up to your image, so edges are soft.</li>
       <li>The heatmap is a coarse 7×7 map scaled up to your photo. It shows where evidence for a breed came from; it is not a proof of why the model decided.</li>
       <li>The browser resizes your photo slightly differently from the Python pipeline used for evaluation, so results can differ a little from the reported test setup.</li>
@@ -102,6 +110,9 @@ const STD = [0.229, 0.224, 0.225];
 // Same order as training (Python sorted()): 12 cat breeds first, then 25 dog breeds.
 const BREEDS = ["Abyssinian", "Bengal", "Birman", "Bombay", "British_Shorthair", "Egyptian_Mau", "Maine_Coon", "Persian", "Ragdoll", "Russian_Blue", "Siamese", "Sphynx", "american_bulldog", "american_pit_bull_terrier", "basset_hound", "beagle", "boxer", "chihuahua", "english_cocker_spaniel", "english_setter", "german_shorthaired", "great_pyrenees", "havanese", "japanese_chin", "keeshond", "leonberger", "miniature_pinscher", "newfoundland", "pomeranian", "pug", "saint_bernard", "samoyed", "scottish_terrier", "shiba_inu", "staffordshire_bull_terrier", "wheaten_terrier", "yorkshire_terrier"];
 const N_CATS = 12;
+// Out-of-domain rule from ood_eval.py (thresholds set on ID validation; printed to 4 decimals).
+const OOD_MIN_MAX_LOGIT = 1.6900;
+const OOD_MIN_PET_AREA = 0.0837;
 
 ort.env.wasm.wasmPaths = `https://cdn.jsdelivr.net/npm/onnxruntime-web@${ORT_VERSION}/dist/`;
 ort.env.wasm.numThreads = self.crossOriginIsolated ? Math.min(4, navigator.hardwareConcurrency || 1) : 1;
@@ -199,6 +210,25 @@ async function analyze(file) {
     const seg = (out.seg_logits || out[session.outputNames[0]]).data;
     const cls = (out.cls_logits || out[session.outputNames[1]]).data;
     const camT = out.cam || out[session.outputNames[2]];
+
+    // Out-of-domain check: same rule as ood_eval.py (area = share of 224x224 pixels with sigmoid > 0.5).
+    let petPx = 0;
+    for (let i = 0; i < SIZE * SIZE; i++) if (seg[i] > 0) petPx++;
+    const area = petPx / (SIZE * SIZE);
+    const maxLogit = Math.max(...cls);
+    const lowArea = area < OOD_MIN_PET_AREA, lowConf = maxLogit < OOD_MIN_MAX_LOGIT;
+    const warnEl = document.getElementById("oodWarn");
+    if (lowArea || lowConf) {
+      const msg = lowArea
+        ? "This photo may not contain a cat or dog: very little of it was detected as a pet."
+        : "This may not be one of the 37 breeds the model knows. Treat the breed guesses below with caution.";
+      warnEl.innerHTML = `<strong>Low-confidence input.</strong> ${msg}` +
+        `<small>Top breed logit ${maxLogit.toFixed(2)} (flag below ${OOD_MIN_MAX_LOGIT.toFixed(2)}) · ` +
+        `pet area ${(area * 100).toFixed(1)}% (flag below ${(OOD_MIN_PET_AREA * 100).toFixed(2)}%)</small>`;
+      warnEl.hidden = false;
+    } else {
+      warnEl.hidden = true;
+    }
 
     // 2. Mask: sigmoid probability map at 224x224, scaled up to display size, then threshold at 0.5.
     const pC = document.createElement("canvas");

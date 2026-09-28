@@ -27,11 +27,29 @@ Course targets were ~0.70–0.80 Pet IoU and ~70% breed accuracy.
 
 ## Deployment
 
-The demo is a static page that runs the model **client-side with ONNX Runtime Web**, so photos never leave the visitor's device. It shows the mask, a background-removed cutout, the top-3 breeds, and a Grad-CAM heatmap for any of the top-3. Source: [`demo/index.html`](demo/index.html).
+The demo is a static page that runs the model **client-side with ONNX Runtime Web**, so photos never leave the visitor's device. It shows the mask, a background-removed cutout, the top-3 breeds, a Grad-CAM heatmap for any of the top-3, and a warning when the photo looks unlike the training data (see Out-of-domain check below). Source: [`demo/index.html`](demo/index.html).
 
 - **ONNX export verified on the full test set.** [`verify_onnx.py`](verify_onnx.py) runs PyTorch and ONNX Runtime side by side on all 1,109 test images: identical metrics to 4 decimals, the same top-1 prediction on all 1,109 images, maximum logit difference 2.94e-4. Export: [`export_onnx.py`](export_onnx.py).
 - **Grad-CAM inside the model, no backpropagation needed.** The classifier head is global average pooling → Linear → ReLU → Linear, so the gradient Grad-CAM needs has a closed form in the head's weights. [`cam.py`](cam.py) builds the heatmap for all 37 breeds into the network, and `pets_unet_cam.onnx` outputs it as a 7×7 map per breed. [`verify_cam.py`](verify_cam.py) checks it against PyTorch autograd Grad-CAM (worst relative difference 5.05e-6 over 100 test images × 2 breeds) and checks ONNX against PyTorch on all 1,109 test images (heatmaps agree to 1.87e-5 relative across all 37 breeds; masks and breed predictions give the same metrics and top-1 agreement as above).
-- **In-browser speed.** Median ~120 ms per image for the deployed model with Grad-CAM on a MacBook Air M5 (Safari, ONNX Runtime Web 1.30.0, WebAssembly, 1 thread), from a 20-run test; two earlier 20-run tests of the model without Grad-CAM gave 119 ms and 120 ms. This times the model only. It excludes resizing the photo, drawing the outputs, and the one-time ~31 MB model download. The demo page has a button to rerun this test on your own device.
+- **In-browser speed.** Median ~120 ms per image for the deployed model with Grad-CAM on a MacBook Air M5 (Safari, ONNX Runtime Web 1.30.0, WebAssembly, 1 thread). Three 20-run tests of the deployed model gave medians of 120, 208 and 120 ms; the 208 ms test (fastest run 123 ms, slowest 312 ms) shows that timings vary between runs. Two earlier tests of the model without Grad-CAM gave 119 and 120 ms. This times the model only. It excludes resizing the photo, drawing the outputs, and the one-time ~31 MB model download. The demo page has a button to rerun this test on your own device.
+
+## Out-of-domain check
+
+The model can only answer with one of its 37 breeds, so the demo warns when a photo looks unlike the training data. The rule, from [`ood_eval.py`](ood_eval.py): warn if the top breed logit is below 1.69 **or** less than 8.37% of the image is predicted as pet.
+
+How it was set up, so that nothing was tuned on test data:
+- Two unfamiliar-image sets, used for evaluation only: 1,000 COCO photos with no cat or dog, and 1,000 Stanford Dogs photos from 98 breeds outside the 37 (the 21 overlapping breeds, plus American Staffordshire Terrier, excluded by name).
+- Each set was split randomly in half. The confidence score (max logit, compared with max softmax probability and energy) was chosen on one half; the results below are on the other half.
+- Thresholds keep 95% (logit) and 99% (pet area) of *validation* pets. The test set was not used to set anything.
+
+| Held-out result | Value |
+|---|---|
+| Real test pets kept | 94.9% (1,052 of 1,109) |
+| Breed accuracy on kept pets | 94.8% (92.4% on all test pets; 49.1% on the 57 rejected) |
+| Non-pet photos (COCO) flagged | 96.8% (of 500) |
+| Unfamiliar dog breeds (Stanford Dogs) flagged | 52.6% (of 500) |
+
+How well the confidence score alone separates unfamiliar images from real pets (AUROC; 1.0 = perfect, 0.5 = guessing): 0.987 for non-pet photos, 0.886 for unfamiliar dog breeds. Non-pet photos are easy to catch; a new dog breed looks enough like a known one that about half slip through. Unfamiliar cat breeds were not tested. Full output: [`docs/ood_results.txt`](docs/ood_results.txt).
 
 ---
 
@@ -77,7 +95,7 @@ DenseNet121 scored highest on test, but **EfficientNet-B0 was selected because i
 ## Limitations
 
 - **Single training run per configuration (one seed).** There are no run-to-run variance estimates, so small differences between models may not be reliable.
-- **Closed set of 37 breeds.** For any other breed, or an image with no pet, the model still returns one of the 37. There is no out-of-domain rejection yet.
+- **Closed set of 37 breeds.** The model always answers with breeds from its 37. The out-of-domain check flags most non-pet photos (96.8%) but only about half of unfamiliar dog breeds (52.6%), and unfamiliar cat breeds were not tested.
 - **Same-distribution test set.** All numbers come from a held-out split of Oxford-IIIT Pet. Accuracy on other kinds of photos has not been measured.
 - **Low-resolution masks.** Masks are predicted at 224×224. The demo scales them up, so edges are soft and can include a thin band of background.
 - **Grad-CAM is coarse and descriptive.** The heatmap is a 7×7 map scaled up to the photo. It shows where evidence for a breed came from, not proof of why the model decided.
@@ -107,7 +125,9 @@ DenseNet121 scored highest on test, but **EfficientNet-B0 was selected because i
 | `verify_onnx.py` | Checks ONNX vs PyTorch on the full test set |
 | `cam.py` | Grad-CAM computed inside the network (exportable to ONNX) |
 | `verify_cam.py` | Checks Grad-CAM vs autograd, exports `pets_unet_cam.onnx`, checks it vs PyTorch |
-| `demo/index.html` | Browser demo (ONNX Runtime Web) with Grad-CAM |
+| `ood_eval.py` | Out-of-domain evaluation: scores, thresholds, held-out results |
+| `docs/ood_results.txt` | Verbatim output of the `ood_eval.py` run |
+| `demo/index.html` | Browser demo (ONNX Runtime Web) with Grad-CAM and the out-of-domain warning |
 
 ## How to run
 
